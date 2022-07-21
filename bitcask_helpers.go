@@ -6,17 +6,17 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func (b *Bitcask) createActiveFile() {
-    activeFile, _ := os.OpenFile(path.Join(b.directoryPath, strconv.FormatInt(b.activeTstamp, 10)),
+    activeFile, _ := os.OpenFile(path.Join(b.directoryPath, 
+    strconv.FormatInt(time.Now().Unix(), 10)),
     os.O_CREATE | os.O_RDWR, fileMode)
 
-    b.activeTstamp++
     b.currentActive.file = activeFile
     b.currentActive.currentPos = 0
     b.currentActive.currentSize = 0
-
 }
 
 func (b *Bitcask) buildKeyDir() {
@@ -41,16 +41,4 @@ func (b *Bitcask) buildKeyDir() {
         	isPending: false,
         }
     }
-}
-
-func (b *Bitcask) setCurrentTstamp() {
-    var maxFileId int64
-
-    for _, elem := range b.keyDir {
-        fileId, _ := strconv.ParseInt(elem.fileId, 10, 64) 
-        if fileId > maxFileId {
-            maxFileId = fileId
-        }
-    }
-    b.activeTstamp = maxFileId + 1
 }

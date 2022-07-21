@@ -39,7 +39,6 @@ type Bitcask struct {
     keyDir map[key]record
     config options
     currentActive activeFile
-    activeTstamp int64
 }
 
 type activeFile struct {
@@ -82,11 +81,9 @@ func open(dirPath string, opts ...ConfigOpt) (*Bitcask, error) {
 
     if openErr == nil {
         bitcask.buildKeyDir()
-        bitcask.setCurrentTstamp()
     } else if os.IsNotExist(openErr) {
         os.MkdirAll(dirPath, dirMode)
         bitcask.keyDir = make(map[key]record)
-        bitcask.activeTstamp = 1
         bitcask.createActiveFile()
     } else {
         return nil, openErr
