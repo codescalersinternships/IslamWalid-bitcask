@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"runtime"
 	"testing"
 )
 
@@ -81,12 +82,14 @@ func TestOpen(t *testing.T) {
     })
 
     t.Run("open bitcask failed", func(t *testing.T) {
-        // create a directory that cannot be openned since it has no execute permission
-        os.MkdirAll(path.Join("no open dir"), 000)
-        _, err := open("no open dir")
-        if err == nil {
-            t.Fatal("Expected Error since path cannot be openned")
+        if runtime.GOOS != "windows" {
+            // create a directory that cannot be openned since it has no execute permission
+            os.MkdirAll(path.Join("no open dir"), 000)
+            _, err := open("no open dir")
+            if err == nil {
+                t.Fatal("Expected Error since path cannot be openned")
+            }
+            os.RemoveAll("no open dir")
         }
-        os.RemoveAll("no open dir")
     })
 }
