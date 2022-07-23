@@ -138,6 +138,7 @@ func TestGet(t *testing.T) {
         want := "value12345"
 
         assertString(t, got, want)
+        os.RemoveAll(testBitcaskPath)
     })
 
     t.Run("not existing value", func(t *testing.T) {
@@ -147,6 +148,7 @@ func TestGet(t *testing.T) {
         _, err := b.Get("unknown key")
 
         assertError(t, err, want)
+        os.RemoveAll(testBitcaskPath)
     })
 }
 
