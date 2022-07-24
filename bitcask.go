@@ -273,6 +273,8 @@ func (bitcask *Bitcask) Merge() error {
             fmt.Fprintln(hintFile, hintFileLine)
             currentPos += int64(n)
             currentSize += int64(n)
+        } else {
+            newKeyDir[key] = bitcask.keyDir[key]
         }
     }
 
