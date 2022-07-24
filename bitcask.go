@@ -113,10 +113,14 @@ func Open(dirPath string, opts ...ConfigOpt) (*Bitcask, error) {
         bitcask.buildKeyDir()
         if bitcask.config.writePermission == ReadOnly {
             bitcask.buildKeyDirFile()
-            lockFile, _ := os.Open(readLock + strconv.Itoa(int(time.Now().Unix())))
+            bitcask.lock = readLock + strconv.Itoa(int(time.Now().Unix()))
+            lockFile, _ := os.OpenFile(path.Join(bitcask.directoryPath, bitcask.lock),
+            os.O_CREATE, fileMode)
             lockFile.Close()
         } else {
-            lockFile, _ := os.Open(writeLock + strconv.Itoa(int(time.Now().Unix())))
+            bitcask.lock = writeLock + strconv.Itoa(int(time.Now().Unix()))
+            lockFile, _ := os.OpenFile(path.Join(bitcask.directoryPath, bitcask.lock),
+            os.O_CREATE, fileMode)
             lockFile.Close()
         }
 
@@ -127,6 +131,10 @@ func Open(dirPath string, opts ...ConfigOpt) (*Bitcask, error) {
         os.MkdirAll(dirPath, dirMode)
         bitcask.keyDir = make(map[string]record)
         bitcask.createActiveFile()
+        bitcask.lock = writeLock + strconv.Itoa(int(time.Now().Unix()))
+        lockFile, _ := os.OpenFile(path.Join(bitcask.directoryPath, bitcask.lock),
+        os.O_CREATE, fileMode)
+        lockFile.Close()
     } else {
         return nil, BitcaskError(fmt.Sprintf("%s: %s", dirPath, CannotOpenThisDir))
     }
@@ -263,13 +271,14 @@ func (bitcask *Bitcask) Sync() error {
     }
 
     for key, line := range bitcask.pendingWrites {
-        bitcask.writeToActiveFile(string(line))
         activeFileInfo, _ := bitcask.currentActive.file.Stat()
 
         recValue := bitcask.keyDir[key]
         recValue.fileId = activeFileInfo.Name()
         recValue.valuePos = bitcask.currentActive.currentPos + staticFields * numberFieldSize + int64(len(key))
         recValue.isPending = false
+        bitcask.keyDir[key] = recValue
+        bitcask.writeToActiveFile(string(line))
     }
 
     return nil
