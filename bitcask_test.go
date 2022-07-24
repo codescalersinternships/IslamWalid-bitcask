@@ -4,9 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path"
-	// "reflect"
-	"runtime"
-	// "strconv"
+	"reflect"
+	"strconv"
 	"testing"
 )
 
@@ -39,49 +38,57 @@ func TestOpen(t *testing.T) {
         os.RemoveAll(testBitcaskPath)
     })
 
-    t.Run("open existing bitcask with read and write permission", func(t *testing.T) {
-        Open(testBitcaskPath, ReadWrite)
+    t.Run("open existing bitcask with write permission", func(t *testing.T) {
+        b1, _ := Open(testBitcaskPath, ReadWrite)
+        b1.Put("key12", "value12345")
+        b1.Close()
 
-        testKeyDir, _ := os.Create(testKeyDirPath)
-        fmt.Fprintln(testKeyDir, "00000000000000000010000000000000000120000000000000000005500000000000863956270000000000000000005key12")
+        b2, _ := Open(testBitcaskPath, ReadWrite)
 
-        Open(testBitcaskPath, ReadWrite)
+        want := "value12345"
+        got, _ := b2.Get("key12")
+        b2.Close()
 
-        if _, err := os.Stat(testBitcaskPath); os.IsNotExist(err) {
-            t.Errorf("Expected to find directory: %q", testBitcaskPath)
-        }
+        assertString(t, got, want)
         os.RemoveAll(testBitcaskPath)
     })
 
-    t.Run("open existing bitcask with sync on put option", func(t *testing.T) {
-        b, _ := Open(testBitcaskPath, ReadWrite, SyncOnPut)
+    t.Run("two readers in the same bitcask at the same time", func(t *testing.T) {
+        b1, _ := Open(testBitcaskPath, ReadWrite)
+        b1.Put("key2", "value2")
+        b1.Put("key3", "value3")
+        b1.Close()
 
-        testKeyDir, _ := os.Create(testKeyDirPath)
-        fmt.Fprintln(testKeyDir, "00000000000000000010000000000000000120000000000000000005500000000000863956270000000000000000005key12")
+        b2, _ := Open(testBitcaskPath)
+        b3, _ := Open(testBitcaskPath)
 
-        b.Close()
+        want := "value2"
+        got, _ := b2.Get("key2")
+        assertString(t, got, want)
+        b2.Close()
 
-        Open(testBitcaskPath, ReadWrite, SyncOnPut)
-
-        if _, err := os.Stat(testBitcaskPath); os.IsNotExist(err) {
-            t.Errorf("Expected to find directory: %q", testBitcaskPath)
-        }
+        got, _ = b3.Get("key2")
+        assertString(t, got, want)
+        b3.Close()
         os.RemoveAll(testBitcaskPath)
     })
 
-    t.Run("open existing bitcask with default options", func(t *testing.T) {
-        Open(testBitcaskPath)
+    t.Run("open existing bitcask with hint files in it", func(t *testing.T) {
+        b1, _ := Open(testBitcaskPath, ReadWrite, SyncOnPut)
 
-        os.MkdirAll(testBitcaskPath, 0700)
-
-        testKeyDir, _ := os.Create(testKeyDirPath)
-        fmt.Fprintln(testKeyDir, "00000000000000000010000000000000000120000000000000000005500000000000863956270000000000000000005key12")
-
-        Open(testBitcaskPath)
-
-        if _, err := os.Stat(testBitcaskPath); os.IsNotExist(err) {
-            t.Errorf("Expected to find directory: %q", testBitcaskPath)
+        for i := 0; i < 1000; i++ {
+            key := fmt.Sprintf("key%d", i + 1)
+            value := fmt.Sprintf("value%d", i + 1)
+            b1.Put(key, value)
         }
+        b1.Merge()
+        b1.Close()
+
+        b2, _ := Open(testBitcaskPath)
+        got, _ := b2.Get("key50")
+        want := "value50"
+
+        assertString(t, got, want)
         os.RemoveAll(testBitcaskPath)
     })
 
@@ -94,25 +101,26 @@ func TestOpen(t *testing.T) {
     })
 
     t.Run("open bitcask failed", func(t *testing.T) {
-        if runtime.GOOS != "windows" {
-            // create a directory that cannot be openned since it has no execute permission
-            os.MkdirAll(path.Join("no open dir"), 000)
+        // create a directory that cannot be openned since it has no execute permission
+        os.MkdirAll(path.Join("no open dir"), 000)
 
-            want := "no open dir: cannot open this directory"
-            _, err := Open("no open dir")
+        want := "no open dir: cannot open this directory"
+        _, err := Open("no open dir")
 
-            assertError(t, err, want)
-            os.RemoveAll("no open dir")
-        }
+        assertError(t, err, want)
+        os.RemoveAll("no open dir")
     })
 }
 
 func TestGet(t *testing.T) {
     t.Run("existing value from file", func(t *testing.T) {
-        b, _ := Open(testBitcaskPath, ReadWrite, SyncOnPut)
-        b.Put("key12", "value12345")
+        b1, _ := Open(testBitcaskPath, ReadWrite, SyncOnPut)
+        b1.Put("key12", "value12345")
+        b1.Close()
 
-        got, _ := b.Get("key12")
+        b2, _ := Open(testBitcaskPath)
+
+        got, _ := b2.Get("key12")
         want := "value12345"
 
         assertString(t, got, want)
@@ -183,132 +191,142 @@ func TestPut(t *testing.T) {
 }
 
 func TestDelete(t *testing.T) {
-    // t.Run("delete existing key", func(t *testing.T) {
-    //     b, _ := Open(testBitcaskPath, ReadWrite, SyncOnPut)
-    //     b.Put("key12", "value12345")
-    //     b.Delete("key12")
-    //     _, err := b.Get("key12")
-    //     assertError(t, err, "key12: key does not exist")
-    //     os.RemoveAll(testBitcaskPath)
-    // })
+    t.Run("delete existing key", func(t *testing.T) {
+        b, _ := Open(testBitcaskPath, ReadWrite, SyncOnPut)
+        b.Put("key12", "value12345")
+        b.Delete("key12")
+        _, err := b.Get("key12")
+        assertError(t, err, "key12: key does not exist")
+        os.RemoveAll(testBitcaskPath)
+    })
 
-    // t.Run("delete not existing key", func(t *testing.T) {
-    //     b, _ := Open(testBitcaskPath, ReadWrite, SyncOnDemand)
-    //     err := b.Delete("key12")
-    //     assertError(t, err, "key12: key does not exist")
-    //     os.RemoveAll(testBitcaskPath)
-    // })
+    t.Run("delete not existing key", func(t *testing.T) {
+        b, _ := Open(testBitcaskPath, ReadWrite, SyncOnDemand)
+        err := b.Delete("key12")
+        assertError(t, err, "key12: key does not exist")
+        os.RemoveAll(testBitcaskPath)
+    })
 
-    // t.Run("delete with no write permission", func(t *testing.T) {
-    //     b, _ := Open(testBitcaskPath)
-    //     err := b.Delete("key12")
-    //     assertError(t, err, "write permission denied")
-    //     os.RemoveAll(testBitcaskPath)
-    // })
+    t.Run("delete with no write permission", func(t *testing.T) {
+        b1, _ := Open(testBitcaskPath, ReadWrite)
+        b1.Close()
+
+        b2, _ := Open(testBitcaskPath)
+        err := b2.Delete("key12")
+        assertError(t, err, "write permission denied")
+        os.RemoveAll(testBitcaskPath)
+    })
 }
 
-// func TestListkeys(t *testing.T) {
-//     b, _ := Open(testBitcaskPath, ReadWrite, SyncOnDemand)
+func TestListkeys(t *testing.T) {
+    b, _ := Open(testBitcaskPath, ReadWrite, SyncOnDemand)
 
-//     key := "key12"
-//     value := "value12345"
-//     b.Put(key, value)
+    key := "key12"
+    value := "value12345"
+    b.Put(key, value)
 
-//     want := []string{"key12"}
-//     got := b.ListKeys()
+    want := []string{"key12"}
+    got := b.ListKeys()
 
-//     if !reflect.DeepEqual(got, want) {
-//         t.Errorf("got:\n%v\nwant:\n%v", got, want)
-//     }
-//     os.RemoveAll(testBitcaskPath)
-// }
+    if !reflect.DeepEqual(got, want) {
+        t.Errorf("got:\n%v\nwant:\n%v", got, want)
+    }
+    os.RemoveAll(testBitcaskPath)
+}
 
-// func TestFold(t *testing.T) {
-//     b, _ := Open(testBitcaskPath, ReadWrite, SyncOnDemand)
+func TestFold(t *testing.T) {
+    b, _ := Open(testBitcaskPath, ReadWrite, SyncOnDemand)
 
-//     for i := 0; i < 10; i++ {
-//         b.Put(fmt.Sprint(i + 1), fmt.Sprint(i + 1))
-//     }
+    for i := 0; i < 10; i++ {
+        b.Put(fmt.Sprint(i + 1), fmt.Sprint(i + 1))
+    }
     
-//     want := 110
-//     got := b.Fold(func(s1, s2 string, a any) any {
-//         acc, _ := a.(int)
-//         k, _ := strconv.Atoi(s1)
-//         v, _ := strconv.Atoi(s2)
+    want := 110
+    got := b.Fold(func(s1, s2 string, a any) any {
+        acc, _ := a.(int)
+        k, _ := strconv.Atoi(s1)
+        v, _ := strconv.Atoi(s2)
 
-//         return acc + k + v
-//     }, 0)
+        return acc + k + v
+    }, 0)
 
-//     if got != want {
-//         t.Errorf("got:%d, want:%d", got, want)
-//     }
-//     os.RemoveAll(testBitcaskPath)
-// }
+    if got != want {
+        t.Errorf("got:%d, want:%d", got, want)
+    }
+    os.RemoveAll(testBitcaskPath)
+}
 
-// func TestMerge(t *testing.T) {
-//     t.Run("with write permission", func(t *testing.T) {
-//         b1, _ := Open(testBitcaskPath, ReadWrite, SyncOnPut)
-//         b1.Put("key12", "value12345")
-//         b1.Merge()
+func TestMerge(t *testing.T) {
+    t.Run("with write permission", func(t *testing.T) {
+        b, _ := Open(testBitcaskPath, ReadWrite, SyncOnPut)
 
-//         b2, _ := Open(testBitcaskPath)
+        for i := 0; i < 1000; i++ {
+            key := fmt.Sprintf("key%d", i + 1)
+            value := fmt.Sprintf("value%d", i + 1)
+            b.Put(key, value)
+        }
+        b.Merge()
+        want := "value50"
+        got, _ := b.Get("key50")
 
-//         want := "value12345"
-//         got, _ := b2.Get("key12")
+        b.Close()
+        assertString(t, got, want)
+        // os.RemoveAll(testBitcaskPath)
+    })
 
-//         t.Errorf("%v\n", b2.keyDir)
-//         assertString(t, got, want)
-//         os.RemoveAll(testBitcaskPath)
-//     })
+    t.Run("with no write permission", func(t *testing.T) {
+        b1, _ := Open(testBitcaskPath, ReadWrite)
+        b1.Close()
 
-//     t.Run("with no write permission", func(t *testing.T) {
-//         b1, _ := Open(testBitcaskPath)
-//         err := b1.Merge()
+        b2, _ := Open(testBitcaskPath)
 
-//         want := "write permission denied"
+        err := b2.Merge()
+        want := "write permission denied"
 
-//         assertError(t, err, want)
-//         os.RemoveAll(testBitcaskPath)
-//     })
-// }
+        assertError(t, err, want)
+        os.RemoveAll(testBitcaskPath)
+    })
+}
 
-// func TestSync(t *testing.T) {
-//     t.Run("put with sync on put option is set", func(t *testing.T) {
-//         b, _ := Open(testBitcaskPath, ReadWrite, SyncOnPut)
-//         b.Put("key12", "value12345")
+func TestSync(t *testing.T) {
+    t.Run("put with sync on put option is set", func(t *testing.T) {
+        b, _ := Open(testBitcaskPath, ReadWrite, SyncOnPut)
+        b.Put("key12", "value12345")
 
-//         want := "value12345"
-//         got, _ := b.Get("key12")
+        want := "value12345"
+        got, _ := b.Get("key12")
 
-//         assertString(t, got, want)
-//         os.RemoveAll(testBitcaskPath)
-//     })
+        assertString(t, got, want)
+        os.RemoveAll(testBitcaskPath)
+    })
 
-//     t.Run("reach max file size limit", func(t *testing.T) {
-//         b, _ := Open(testBitcaskPath, ReadWrite, SyncOnPut)
+    t.Run("reach max file size limit", func(t *testing.T) {
+        b, _ := Open(testBitcaskPath, ReadWrite, SyncOnPut)
 
-//         for i := 0; i < 25; i++ {
-//             key := fmt.Sprintf("key%d", i + 1)
-//             value := fmt.Sprintf("value%d", i + 1)
-//             b.Put(key, value)
-//         }
+        for i := 0; i < 1000; i++ {
+            key := fmt.Sprintf("key%d", i + 1)
+            value := fmt.Sprintf("value%d", i + 1)
+            b.Put(key, value)
+        }
 
-//         want := "value25"
-//         got, _ := b.Get("key25")
+        want := "value25"
+        got, _ := b.Get("key25")
 
-//         assertString(t, got, want)
-//         os.RemoveAll(testBitcaskPath)
-//     })
+        assertString(t, got, want)
+        os.RemoveAll(testBitcaskPath)
+    })
 
-//     t.Run("sync with no write permission", func(t *testing.T) {
-//         b, _ := Open(testBitcaskPath)
+    t.Run("sync with no write permission", func(t *testing.T) {
+        b1, _ := Open(testBitcaskPath, ReadWrite)
+        b1.Close()
 
-//         err := b.Sync()
+        b2, _ := Open(testBitcaskPath)
+        err := b2.Sync()
 
-//         assertError(t, err, "write permission denied")
-//         os.RemoveAll(testBitcaskPath)
-//     })
-// }
+        assertError(t, err, "write permission denied")
+        os.RemoveAll(testBitcaskPath)
+    })
+}
 
 func assertError(t testing.TB, err error, want string) {
     t.Helper()
