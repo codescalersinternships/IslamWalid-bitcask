@@ -94,7 +94,7 @@ func (bitcask *Bitcask) addPendingWrite(key string, value string, tstamp int64) 
 }
 
 // writes to the current active file in the bitcask datastore.
-func (bitcask *Bitcask) writeToActiveFile(line string) {
+func (bitcask *Bitcask) writeToActiveFile(line string) int64 {
     if int64(len(line)) + bitcask.currentActive.currentSize > maxFileSize {
         newActiveFileName := strconv.FormatInt(time.Now().UnixMicro(), 10)
         newActiveFile, _ := os.OpenFile(path.Join(bitcask.directoryPath, newActiveFileName), os.O_CREATE | os.O_RDWR, fileMode)
@@ -107,8 +107,7 @@ func (bitcask *Bitcask) writeToActiveFile(line string) {
     }
 
     n, _ := bitcask.currentActive.file.Write([]byte(fmt.Sprintln(line)))
-    bitcask.currentActive.currentSize += int64(n)
-    bitcask.currentActive.currentPos += int64(n)
+    return int64(n)
 }
 
 // compressFileLine creates a line in a form to be written into files.

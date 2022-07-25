@@ -1,11 +1,12 @@
 package bitcask
 
 import (
-    "fmt"
-    "os"
-    "path"
-    "strconv"
-    "time"
+	"fmt"
+	"os"
+	"path"
+	"strconv"
+	"strings"
+	"time"
 )
 
 // Maximum file size 10KB.
@@ -138,7 +139,8 @@ func Open(dirPath string, opts ...ConfigOpt) (*Bitcask, error) {
         }
     }
 
-    _, openErr := os.Open(dirPath)
+    bitcaskDir, openErr := os.Open(dirPath)
+    defer bitcaskDir.Close()
 
     if openErr == nil {
         if bitcask.lockCheck() == writer {
@@ -156,6 +158,7 @@ func Open(dirPath string, opts ...ConfigOpt) (*Bitcask, error) {
             lockFile, _ := os.OpenFile(path.Join(bitcask.directoryPath, bitcask.lock),
             os.O_CREATE, fileMode)
             lockFile.Close()
+            bitcask.createActiveFile()
         }
 
     } else if os.IsNotExist(openErr) {
@@ -270,12 +273,16 @@ func (bitcask *Bitcask) Merge() error {
 
     var currentPos int64 = 0
     var currentSize int64 = 0
-    var oldFiles []string
     newKeyDir := make(map[string]record)
+
+    bitcask.Sync()
+
+    bitcaskDir, _ := os.Open(bitcask.directoryPath)
+    defer bitcaskDir.Close()
+    bitcaskDirContent, _ := bitcaskDir.Readdir(0)
 
     mergeFileName := strconv.FormatInt(time.Now().UnixMicro(), 10)
     hintFileName := hintFilePrefix + mergeFileName
-    bitcask.Sync()
 
     mergeFile, _ := os.OpenFile(path.Join(bitcask.directoryPath, mergeFileName),
     os.O_CREATE | os.O_RDWR, fileMode)
@@ -287,7 +294,6 @@ func (bitcask *Bitcask) Merge() error {
         if recValue.fileId != bitcask.currentActive.fileName {
 
             tstamp := time.Now().UnixMicro()
-            oldFiles = append(oldFiles, recValue.fileId)
             value, _ := bitcask.Get(key)
             fileLine := string(compressFileLine(key, value, tstamp))
 
@@ -329,9 +335,12 @@ func (bitcask *Bitcask) Merge() error {
     mergeFile.Close()
     hintFile.Close()
 
-    for _, file := range oldFiles {
-        os.Remove(path.Join(bitcask.directoryPath, file))
-        os.Remove(path.Join(bitcask.directoryPath, hintFilePrefix + file))
+    for _, file := range bitcaskDirContent {
+        fileName := file.Name()
+        // Skip lock and active files
+        if !strings.HasPrefix(fileName, ".") && bitcask.currentActive.fileName != fileName {
+            os.Remove(path.Join(bitcask.directoryPath, fileName))
+        }
     }
 
     return nil
@@ -346,14 +355,18 @@ func (bitcask *Bitcask) Sync() error {
 
     for key, line := range bitcask.pendingWrites {
         if bitcask.keyDir[key].isPending {
-            activeFileInfo, _ := bitcask.currentActive.file.Stat()
-
             recValue := bitcask.keyDir[key]
-            recValue.fileId = activeFileInfo.Name()
+
+            n := bitcask.writeToActiveFile(string(line))
+
+            recValue.fileId = bitcask.currentActive.fileName
             recValue.valuePos = bitcask.currentActive.currentPos + staticFields * numberFieldSize + int64(len(key))
             recValue.isPending = false
             bitcask.keyDir[key] = recValue
-            bitcask.writeToActiveFile(string(line))
+
+            bitcask.currentActive.currentPos += n
+            bitcask.currentActive.currentSize += n
+
             delete(bitcask.pendingWrites, key)
         }
     }
