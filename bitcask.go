@@ -305,6 +305,7 @@ func (bitcask *Bitcask) Sync() error {
             recValue.isPending = false
             bitcask.keyDir[key] = recValue
             bitcask.writeToActiveFile(string(line))
+            delete(bitcask.pendingWrites, key)
         }
     }
 
