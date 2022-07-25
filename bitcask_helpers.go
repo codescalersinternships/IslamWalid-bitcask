@@ -10,11 +10,53 @@ import (
 	"time"
 )
 
+// openExistingDatastore opens an existing bitcask datastore.
+func (bitcask *Bitcask) openExistingDatastore() error {
+    if bitcask.lockCheck() == writer {
+        return BitcaskError(WriterExist)
+    }
+
+    bitcask.buildKeyDir()
+
+    if bitcask.config.writePermission == ReadOnly {
+        bitcask.buildKeyDirFile()
+        bitcask.lock = readLock + strconv.Itoa(int(time.Now().UnixMicro()))
+        lockFile, _ := os.OpenFile(path.Join(bitcask.datastorePath, bitcask.lock),
+        os.O_CREATE, fileMode)
+        lockFile.Close()
+    } else {
+        bitcask.lock = writeLock + strconv.Itoa(int(time.Now().UnixMicro()))
+        lockFile, _ := os.OpenFile(path.Join(bitcask.datastorePath, bitcask.lock),
+        os.O_CREATE, fileMode)
+        lockFile.Close()
+        bitcask.createActiveFile()
+    }
+
+    return nil
+}
+
+// createNewDatastore builds new bitcask datastore.
+func (bitcask *Bitcask) createNewDatastore() error {
+    if bitcask.config.writePermission == ReadOnly {
+        return BitcaskError(CannotCreateBitcask)
+    }
+
+    os.MkdirAll(bitcask.datastorePath, dirMode)
+    bitcask.keyDir = make(map[string]record)
+    bitcask.createActiveFile()
+    bitcask.lock = writeLock + strconv.Itoa(int(time.Now().UnixMicro()))
+    lockFile, _ := os.OpenFile(path.Join(bitcask.datastorePath, bitcask.lock),
+    os.O_CREATE, fileMode)
+    lockFile.Close()
+
+    return nil
+}
+
 // createActiveFile creates a new active file.
 func (bitcask *Bitcask) createActiveFile() {
     fileName := strconv.FormatInt(time.Now().UnixMicro(), 10)
 
-    activeFile, _ := os.OpenFile(path.Join(bitcask.directoryPath, fileName),
+    activeFile, _ := os.OpenFile(path.Join(bitcask.datastorePath, fileName),
     os.O_CREATE | os.O_RDWR, fileMode)
 
     bitcask.currentActive.file = activeFile
@@ -26,7 +68,7 @@ func (bitcask *Bitcask) createActiveFile() {
 // buildKeyDir establishes keydir associated with a bitcask datastore.
 func (bitcask *Bitcask) buildKeyDir() {
     if bitcask.config.writePermission == ReadOnly && bitcask.lockCheck() == reader {
-        keyDirData, _ := os.ReadFile(path.Join(bitcask.directoryPath, bitcask.keyDirFileCheck()))
+        keyDirData, _ := os.ReadFile(path.Join(bitcask.datastorePath, bitcask.keyDirFileCheck()))
 
         bitcask.keyDir = make(map[string]record)
         keyDirScanner := bufio.NewScanner(strings.NewReader(string(keyDirData)))
@@ -47,7 +89,7 @@ func (bitcask *Bitcask) buildKeyDir() {
     } else {
         var fileNames []string
         hintFilesMap := make(map[string]string)
-        bitcaskDir, _ := os.Open(bitcask.directoryPath)
+        bitcaskDir, _ := os.Open(bitcask.datastorePath)
         files, _ := bitcaskDir.Readdir(0)
 
         for _, file := range files {
@@ -65,7 +107,7 @@ func (bitcask *Bitcask) buildKeyDir() {
                 bitcask.extractHintFile(hint)
             } else {
                 var currentPos int64 = 0
-                fileData, _ := os.ReadFile(path.Join(bitcask.directoryPath, name))
+                fileData, _ := os.ReadFile(path.Join(bitcask.datastorePath, name))
                 fileScanner := bufio.NewScanner(strings.NewReader(string(fileData)))
                 for fileScanner.Scan() {
                     line := fileScanner.Text()
@@ -97,7 +139,7 @@ func (bitcask *Bitcask) addPendingWrite(key string, value string, tstamp int64) 
 func (bitcask *Bitcask) writeToActiveFile(line string) int64 {
     if int64(len(line)) + bitcask.currentActive.currentSize > maxFileSize {
         newActiveFileName := strconv.FormatInt(time.Now().UnixMicro(), 10)
-        newActiveFile, _ := os.OpenFile(path.Join(bitcask.directoryPath, newActiveFileName), os.O_CREATE | os.O_RDWR, fileMode)
+        newActiveFile, _ := os.OpenFile(path.Join(bitcask.datastorePath, newActiveFileName), os.O_CREATE | os.O_RDWR, fileMode)
 
         bitcask.currentActive.currentSize = 0
         bitcask.currentActive.currentPos = 0
@@ -133,7 +175,7 @@ func extractFileLine(line string) (string, string, int64, int64, int64) {
 func (bitcask *Bitcask) buildKeyDirFile() {
     keyDirFileName := keyDirFilePrefix + strconv.FormatInt(time.Now().UnixMicro(), 10)
     bitcask.keyDirFile = keyDirFileName
-    keyDirFile, _ := os.Create(path.Join(bitcask.directoryPath, keyDirFileName))
+    keyDirFile, _ := os.Create(path.Join(bitcask.datastorePath, keyDirFileName))
     for key, recValue := range bitcask.keyDir {
         fileId, _ := strconv.ParseInt(recValue.fileId, 10, 64)
         fileIdStr:= padWithZero(fileId)
@@ -170,7 +212,7 @@ func buildHintFileLine(recValue record, key string) string {
 
 // extractHintFile extracts the data from hint files.
 func (bitcask *Bitcask) extractHintFile(hintName string) {
-    hintFileData, _ := os.ReadFile(path.Join(bitcask.directoryPath, hintName))
+    hintFileData, _ := os.ReadFile(path.Join(bitcask.datastorePath, hintName))
     hintFileScanner := bufio.NewScanner(strings.NewReader(string(hintFileData)))
 
     fileId := strings.Trim(hintName, hintFilePrefix)
@@ -195,7 +237,7 @@ func (bitcask *Bitcask) extractHintFile(hintName string) {
 
 // lockCheck checks if exist another process in the bitcask datastore.
 func (bitcask *Bitcask) lockCheck() processAccess {
-    bitcaskDir, _ := os.Open(bitcask.directoryPath)
+    bitcaskDir, _ := os.Open(bitcask.datastorePath)
 
     files, _ := bitcaskDir.Readdir(0)
     
@@ -212,7 +254,7 @@ func (bitcask *Bitcask) lockCheck() processAccess {
 // keyDirFileCheck checks if keydir file associated with another existing process exists.
 func (bitcask *Bitcask) keyDirFileCheck() string {
     var fileName string
-    bitcaskDir, _ := os.Open(bitcask.directoryPath)
+    bitcaskDir, _ := os.Open(bitcask.datastorePath)
 
     files, _ := bitcaskDir.Readdir(0)
     
