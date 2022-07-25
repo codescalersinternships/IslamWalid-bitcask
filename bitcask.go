@@ -8,49 +8,76 @@ import (
     "time"
 )
 
+// Maximum file size 10KB.
 const maxFileSize = 10 * 1024
 
 const (
+    // ReadOnly constant give the bitcask process read only permission.
     ReadOnly     ConfigOpt = 0
+    // ReadWrite constant allow the bitcask process to both read and write.
     ReadWrite    ConfigOpt = 1
+    // SyncOnPut makes the bitcask sync the writes to the files after each put.
     SyncOnPut    ConfigOpt = 2
+    // SyncOnDemand makes the bitcask sync when user calls the sync function.
     SyncOnDemand ConfigOpt = 3
 
+    // Error message when key not found when deleting or getting it.
     KeyDoesNotExist = "key does not exist"
+    // Error message when the directory cannot be openned for any reason.
     CannotOpenThisDir = "cannot open this directory"
+    // Error message when a read only process try to write.
     WriteDenied = "write permission denied"
-    CannotCreateBitcask = "read only cannot create new bitcask directory"
+    // Error message when a read only process try to create a new bitcask datastore.
+    CannotCreateBitcask = "read only cannot create new bitcask datastore"
+    // Error message when a process try to access a bitcask with writer process holding it.
     WriterExist = "another writer exists in this bitcask"
 )
 
 const (
-    dirMode = os.FileMode(0700)
-    fileMode = os.FileMode(0600)
+    // Default file mode.
+    dirMode = os.FileMode(0777)
+    // Default directory mode.
+    fileMode = os.FileMode(0666)
 
+    // Prefix used in keydir file name.
     keyDirFilePrefix = "keydir"
+    // Prefix used in hintfile names.
     hintFilePrefix = "hintfile"
 
+    // Number and size of fields of file line with constant size.
     staticFields = 3
     numberFieldSize = 19
 
+    // Constant to determine the process in the bitcask is a reader.
     reader      processAccess = 0
+    // Constant to determine the process in the bitcask is a writer.
     writer      processAccess = 1
+    // Constant to determine there is no process in the bitcask.
     noProcess   processAccess = 2
 
+    // Prefix to read only process lock.
     readLock = ".readlock"
+    // Prefix to read and write process lock.
     writeLock = ".writelock"
 
+    // Maximum allowed pending writes.
     maxPendingWrites = 100
 
+    // Value to distinguish the deleted values.
     tompStone = "DELETE THIS VALUE"
 )
 
+// ConfigOpt is a type to the config option constants the user pass to open.
 type ConfigOpt int
 
+// processAccess is a type for determining the access permission of existing process.
 type processAccess int
 
+// BitcaskError represents the type or errors can occur while process is running on a bitcask.
 type BitcaskError string
 
+// Bitcask contains the data needed to manipulate the bitcask datastore.
+// user creates an object of it to use the bitcask.
 type Bitcask struct {
     directoryPath string
     lock string
@@ -61,6 +88,7 @@ type Bitcask struct {
     pendingWrites map[string]string
 }
 
+// activeFile represents the current active file that is used to append values.
 type activeFile struct {
     file *os.File
     fileName string
@@ -68,6 +96,7 @@ type activeFile struct {
     currentSize int64
 }
 
+// record represents the value of keydir map.
 type record struct {
     fileId string
     valueSize int64
@@ -76,15 +105,22 @@ type record struct {
     isPending bool
 }
 
+// options groups the config options passed to Open.
 type options struct {
     writePermission ConfigOpt
     syncOption ConfigOpt
 }
 
+// Implement error interface.
 func (e BitcaskError) Error() string {
     return string(e)
 }
 
+// Open creates a new process to manipulate the given bitcask datastore path.
+// It takes options ReadWrite, ReadOnly, SyncOnPut and SyncOnDemand.
+// Only one ReadWrite process can open a bitcask at a time.
+// Only ReadWrite permission can create a new bitcask datastore.
+// If there is no bitcask datastore in the given path a new datastore is created when ReadWrite permission is given.
 func Open(dirPath string, opts ...ConfigOpt) (*Bitcask, error) {
     bitcask := Bitcask{
         keyDir: make(map[string]record),
@@ -92,7 +128,6 @@ func Open(dirPath string, opts ...ConfigOpt) (*Bitcask, error) {
         config: options{writePermission: ReadOnly, syncOption: SyncOnDemand},
     }
 
-    // parse user options
     for _, opt := range opts {
         switch opt {
         case ReadWrite:
@@ -103,7 +138,6 @@ func Open(dirPath string, opts ...ConfigOpt) (*Bitcask, error) {
         }
     }
 
-    // check if directory exists
     _, openErr := os.Open(dirPath)
 
     if openErr == nil {
@@ -141,6 +175,8 @@ func Open(dirPath string, opts ...ConfigOpt) (*Bitcask, error) {
     return &bitcask, nil
 }
 
+// Get retrieves the value by key from a bitcask datastore.
+// returns an error if key does not exist in the bitcask datastore.
 func (bitcask *Bitcask) Get(key string) (string, error) {
     recValue, isExist := bitcask.keyDir[key]
 
@@ -160,6 +196,8 @@ func (bitcask *Bitcask) Get(key string) (string, error) {
     }
 }
 
+// Put stores a value by key in a bitcask datastore.
+// Sync on each put if SyncOnPut option is set.
 func (bitcask *Bitcask) Put(key string, value string) error {
     if bitcask.config.writePermission == ReadOnly {
         return BitcaskError(WriteDenied)
@@ -182,6 +220,9 @@ func (bitcask *Bitcask) Put(key string, value string) error {
     return nil
 }
 
+// Delete removes a key from a bitcask datastore 
+// by appending a special TompStone value that will be deleted in the next merge.
+// returns an error if key does not exist in the bitcask datastore.
 func (bitcask *Bitcask) Delete(key string) error {
     if bitcask.config.writePermission == ReadOnly {
         return BitcaskError(WriteDenied)
@@ -198,6 +239,7 @@ func (bitcask *Bitcask) Delete(key string) error {
     return nil
 }
 
+// ListKeys list all keys in a bitcask datastore.
 func (bitcask *Bitcask) ListKeys() []string {
     var list []string
 
@@ -208,6 +250,8 @@ func (bitcask *Bitcask) ListKeys() []string {
     return list
 }
 
+// Fold folds over all key/value pairs in a bitcask datastore.
+// fun is expected to be in the form: F(K, V, Acc) -> Acc
 func (bitcask *Bitcask) Fold(fun func(string, string, any) any, acc any) any {
     for key := range bitcask.keyDir {
         value, _ := bitcask.Get(key)
@@ -216,6 +260,9 @@ func (bitcask *Bitcask) Fold(fun func(string, string, any) any, acc any) any {
     return acc
 }
 
+// Merge rearrange the bitcask datastore in a more compact form.
+// Also produces hintfiles to provide a faster startup.
+// returns an error if ReadWrite permission is not set.
 func (bitcask *Bitcask) Merge() error {
     if bitcask.config.writePermission == ReadOnly {
         return BitcaskError(WriteDenied)
@@ -290,6 +337,8 @@ func (bitcask *Bitcask) Merge() error {
     return nil
 }
 
+// Sync forces all pending writes to be written into disk.
+// returns an error if ReadWrite permission is not set.
 func (bitcask *Bitcask) Sync() error {
     if bitcask.config.writePermission == ReadOnly {
         return BitcaskError(WriteDenied)
@@ -312,6 +361,7 @@ func (bitcask *Bitcask) Sync() error {
     return nil
 }
 
+// Close flushes all pending writes into disk and closes the bitcask datastore.
 func (bitcask *Bitcask) Close() {
     if bitcask.config.writePermission == ReadWrite {
         bitcask.Sync()

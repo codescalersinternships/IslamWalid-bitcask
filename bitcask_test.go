@@ -34,7 +34,7 @@ func TestOpen(t *testing.T) {
 
     t.Run("open new bitcask with default options", func(t *testing.T) {
         _, err := Open(testBitcaskPath)
-        assertError(t, err, "read only cannot create new bitcask directory")
+        assertError(t, err, "read only cannot create new bitcask datastore")
         os.RemoveAll(testBitcaskPath)
     })
 
