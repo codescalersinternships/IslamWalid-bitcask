@@ -161,23 +161,6 @@ func TestPut(t *testing.T) {
         os.RemoveAll(testBitcaskPath)
     })
 
-    t.Run("reach max pending writes limit", func(t *testing.T) {
-        b, _ := Open(testBitcaskPath, ReadWrite, SyncOnDemand)
-
-        for i := 0; i <= maxPendingWrites; i++ {
-            key := fmt.Sprintf("key%d", i + 1)
-            value := fmt.Sprintf("value%d", i + 1)
-            b.Put(key, value)
-        }
-
-        _, isExist := b.pendingWrites["key101"]
-        if len(b.pendingWrites) != 1 && !isExist {
-            t.Error("max pending writes limit reached and no force sync happened")
-            t.Error(len(b.pendingWrites))
-        }
-        os.RemoveAll(testBitcaskPath)
-    })
-
     t.Run("put with no write permission", func(t *testing.T) {
         b1, _ := Open(testBitcaskPath, ReadWrite)
         b1.Close()
@@ -271,7 +254,7 @@ func TestMerge(t *testing.T) {
 
         b.Close()
         assertString(t, got, want)
-        // os.RemoveAll(testBitcaskPath)
+        os.RemoveAll(testBitcaskPath)
     })
 
     t.Run("with no write permission", func(t *testing.T) {

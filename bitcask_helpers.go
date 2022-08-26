@@ -11,41 +11,41 @@ import (
 )
 
 // openExistingDatastore opens an existing bitcask datastore.
-func (bitcask *Bitcask) openExistingDatastore() error {
-    if bitcask.lockCheck() == writer {
+func (b *Bitcask) openExistingDatastore() error {
+    if b.lockCheck() == writer {
         return BitcaskError(WriterExist)
     }
 
-    bitcask.buildKeyDir()
+    b.buildKeyDir()
 
-    if bitcask.config.writePermission == ReadOnly {
-        bitcask.buildKeyDirFile()
-        bitcask.lock = readLock + strconv.Itoa(int(time.Now().UnixMicro()))
-        lockFile, _ := os.OpenFile(path.Join(bitcask.datastorePath, bitcask.lock),
+    if b.config.writePermission == ReadOnly {
+        b.buildKeyDirFile()
+        b.lock = readLock + strconv.Itoa(int(time.Now().UnixMicro()))
+        lockFile, _ := os.OpenFile(path.Join(b.datastorePath, b.lock),
         os.O_CREATE, fileMode)
         lockFile.Close()
     } else {
-        bitcask.lock = writeLock + strconv.Itoa(int(time.Now().UnixMicro()))
-        lockFile, _ := os.OpenFile(path.Join(bitcask.datastorePath, bitcask.lock),
+        b.lock = writeLock + strconv.Itoa(int(time.Now().UnixMicro()))
+        lockFile, _ := os.OpenFile(path.Join(b.datastorePath, b.lock),
         os.O_CREATE, fileMode)
         lockFile.Close()
-        bitcask.createActiveFile()
+        b.createActiveFile()
     }
 
     return nil
 }
 
 // createNewDatastore builds new bitcask datastore.
-func (bitcask *Bitcask) createNewDatastore() error {
-    if bitcask.config.writePermission == ReadOnly {
+func (b *Bitcask) createNewDatastore() error {
+    if b.config.writePermission == ReadOnly {
         return BitcaskError(CannotCreateBitcask)
     }
 
-    os.MkdirAll(bitcask.datastorePath, dirMode)
-    bitcask.keyDir = make(map[string]record)
-    bitcask.createActiveFile()
-    bitcask.lock = writeLock + strconv.Itoa(int(time.Now().UnixMicro()))
-    lockFile, _ := os.OpenFile(path.Join(bitcask.datastorePath, bitcask.lock),
+    os.MkdirAll(b.datastorePath, dirMode)
+    b.keyDir = make(map[string]record)
+    b.createActiveFile()
+    b.lock = writeLock + strconv.Itoa(int(time.Now().UnixMicro()))
+    lockFile, _ := os.OpenFile(path.Join(b.datastorePath, b.lock),
     os.O_CREATE, fileMode)
     lockFile.Close()
 
@@ -53,24 +53,50 @@ func (bitcask *Bitcask) createNewDatastore() error {
 }
 
 // createActiveFile creates a new active file.
-func (bitcask *Bitcask) createActiveFile() {
+func (b *Bitcask) createActiveFile() error {
     fileName := strconv.FormatInt(time.Now().UnixMicro(), 10)
 
-    activeFile, _ := os.OpenFile(path.Join(bitcask.datastorePath, fileName),
-    os.O_CREATE | os.O_RDWR, fileMode)
+    fileFlags := os.O_CREATE | os.O_RDWR
+    if b.config.syncOption == SyncOnPut {
+        fileFlags |= os.O_SYNC
+    }
 
-    bitcask.currentActive.file = activeFile
-    bitcask.currentActive.fileName = fileName
-    bitcask.currentActive.currentPos = 0
-    bitcask.currentActive.currentSize = 0
+    activeFile, err := os.OpenFile(path.Join(b.datastorePath, fileName), fileFlags, fileMode)
+    if err != nil {
+        return err
+    }
+
+    b.activeFile.file = activeFile
+    b.activeFile.fileName = fileName
+    b.activeFile.currentPos = 0
+    b.activeFile.currentSize = 0
+
+    return nil
+}
+
+// writes to the current active file in the bitcask datastore.
+func (b *Bitcask) writeToActiveFile(line string) (int, error) {
+    if len(line) + b.activeFile.currentSize > maxFileSize {
+        err := b.createActiveFile()
+        if err != nil {
+            return 0, err
+        }
+    }
+
+    n, err := b.activeFile.file.Write([]byte(fmt.Sprintln(line)))
+    if err != nil {
+        return 0, err
+    }
+
+    return n, nil
 }
 
 // buildKeyDir establishes keydir associated with a bitcask datastore.
-func (bitcask *Bitcask) buildKeyDir() {
-    if bitcask.config.writePermission == ReadOnly && bitcask.lockCheck() == reader {
-        keyDirData, _ := os.ReadFile(path.Join(bitcask.datastorePath, bitcask.keyDirFileCheck()))
+func (b *Bitcask) buildKeyDir() {
+    if b.config.writePermission == ReadOnly && b.lockCheck() == reader {
+        keyDirData, _ := os.ReadFile(path.Join(b.datastorePath, b.keyDirFileCheck()))
 
-        bitcask.keyDir = make(map[string]record)
+        b.keyDir = make(map[string]record)
         keyDirScanner := bufio.NewScanner(strings.NewReader(string(keyDirData)))
 
         for keyDirScanner.Scan() {
@@ -78,18 +104,17 @@ func (bitcask *Bitcask) buildKeyDir() {
 
             key, fileId, valueSize, valuePos, tstamp := extractKeyDirFileLine(line)
 
-            bitcask.keyDir[key] = record{
+            b.keyDir[key] = record{
                 fileId:    fileId,
                 valueSize: valueSize,
                 valuePos:  valuePos,
                 tstamp:    tstamp,
-                isPending: false,
             }
         }
     } else {
         var fileNames []string
         hintFilesMap := make(map[string]string)
-        bitcaskDir, _ := os.Open(bitcask.datastorePath)
+        bitcaskDir, _ := os.Open(b.datastorePath)
         files, _ := bitcaskDir.Readdir(0)
 
         for _, file := range files {
@@ -104,140 +129,112 @@ func (bitcask *Bitcask) buildKeyDir() {
 
         for _, name := range fileNames {
             if hint, isExist := hintFilesMap[name]; isExist {
-                bitcask.extractHintFile(hint)
+                b.extractHintFile(hint)
             } else {
-                var currentPos int64 = 0
-                fileData, _ := os.ReadFile(path.Join(bitcask.datastorePath, name))
+                var currentPos int = 0
+                fileData, _ := os.ReadFile(path.Join(b.datastorePath, name))
                 fileScanner := bufio.NewScanner(strings.NewReader(string(fileData)))
                 for fileScanner.Scan() {
                     line := fileScanner.Text()
                     key, _, tstamp, keySize, valueSize := extractFileLine(line)
-                    bitcask.keyDir[key] = record{
+                    b.keyDir[key] = record{
                     	fileId:    name,
                     	valueSize: valueSize,
                     	valuePos:  currentPos + staticFields * numberFieldSize + keySize,
                     	tstamp:    tstamp,
-                    	isPending: false,
                     }
-                    currentPos += int64(len(line) + 1)
+                    currentPos += len(line) + 1
                 }
             }
         }
     }
 }
 
-// addPendingWrite adds a write to pending writes list.
-// it force sync if pending writes number reached the maximum limit.
-func (bitcask *Bitcask) addPendingWrite(key string, value string, tstamp int64) {
-    if len(bitcask.pendingWrites) == maxPendingWrites {
-        bitcask.Sync()
-    }
-    bitcask.pendingWrites[key] = string(compressFileLine(key, value, tstamp))
-}
-
-// writes to the current active file in the bitcask datastore.
-func (bitcask *Bitcask) writeToActiveFile(line string) int64 {
-    if int64(len(line)) + bitcask.currentActive.currentSize > maxFileSize {
-        newActiveFileName := strconv.FormatInt(time.Now().UnixMicro(), 10)
-        newActiveFile, _ := os.OpenFile(path.Join(bitcask.datastorePath, newActiveFileName), os.O_CREATE | os.O_RDWR, fileMode)
-
-        bitcask.currentActive.currentSize = 0
-        bitcask.currentActive.currentPos = 0
-        bitcask.currentActive.file.Close()
-        bitcask.currentActive.file = newActiveFile
-        bitcask.currentActive.fileName = newActiveFileName
-    }
-
-    n, _ := bitcask.currentActive.file.Write([]byte(fmt.Sprintln(line)))
-    return int64(n)
-}
-
-// compressFileLine creates a line in a form to be written into files.
-func compressFileLine(key string, value string, tstamp int64) []byte {
-    tstampStr := padWithZero(tstamp)
-    keySize := padWithZero(int64(len([]byte(key))))
-    valueSize := padWithZero(int64(len([]byte(value))))
-    return []byte(tstampStr + keySize + valueSize + string(key) + value)
-}
-
-// extractFileLine extracts the data embedded in the file line.
-func extractFileLine(line string) (string, string, int64, int64, int64) {
-    tstamp, _ := strconv.ParseInt(line[0: 19], 10, 64)
-    keySize, _ := strconv.ParseInt(line[19:38], 10, 64)
-    valueSize, _ := strconv.ParseInt(line[38:57], 10, 64)
-    key := line[57:57+keySize]
-    value := line[57+keySize:]
-
-    return key, value, tstamp, keySize, valueSize
-}
-
 // buildKeyDirFile creates the file used by another processes to read the keydir of the current running procces.
-func (bitcask *Bitcask) buildKeyDirFile() {
+func (b *Bitcask) buildKeyDirFile() {
     keyDirFileName := keyDirFilePrefix + strconv.FormatInt(time.Now().UnixMicro(), 10)
-    bitcask.keyDirFile = keyDirFileName
-    keyDirFile, _ := os.Create(path.Join(bitcask.datastorePath, keyDirFileName))
-    for key, recValue := range bitcask.keyDir {
-        fileId, _ := strconv.ParseInt(recValue.fileId, 10, 64)
+    b.keyDirFile = keyDirFileName
+    keyDirFile, _ := os.Create(path.Join(b.datastorePath, keyDirFileName))
+    for key, recValue := range b.keyDir {
+        fileId, _ := strconv.Atoi(recValue.fileId)
         fileIdStr:= padWithZero(fileId)
         valueSizeStr:= padWithZero(recValue.valueSize)
         valuePosStr:= padWithZero(recValue.valuePos)
         tstampStr := padWithZero(recValue.tstamp)
-        keySizeStr := padWithZero(int64(len(key)))
+        keySizeStr := padWithZero(len(key))
 
         line := fileIdStr + valueSizeStr + valuePosStr + tstampStr + keySizeStr + key
         fmt.Fprintln(keyDirFile, line)
     }
 }
 
+// compressFileLine creates a line in a form to be written into files.
+func compressFileLine(key string, value string, tstamp int) []byte {
+    tstampStr := padWithZero(tstamp)
+    keySize := padWithZero(len([]byte(key)))
+    valueSize := padWithZero(len([]byte(value)))
+    return []byte(tstampStr + keySize + valueSize + string(key) + value)
+}
+
+// extractFileLine extracts the data embedded in the file line.
+func extractFileLine(line string) (string, string, int, int, int) {
+    tstamp, _ := strconv.Atoi(line[0: 19])
+    keySize, _ := strconv.Atoi(line[19:38])
+    valueSize, _ := strconv.Atoi(line[38:57])
+    key := line[57:57+keySize]
+    value := line[57+keySize:]
+
+    return key, value, tstamp, keySize, valueSize
+}
+
 // extractKeyDirFileLine extracts the keydir data from keyDirFile.
-func extractKeyDirFileLine(line string) (string, string, int64, int64, int64) {
-    fileId, _ := strconv.ParseInt(line[0:19], 10, 64)
-    valueSize, _ := strconv.ParseInt(line[19:38], 10, 64)
-    valuePos, _ := strconv.ParseInt(line[38:57], 10, 64)
-    tstamp, _ := strconv.ParseInt(line[57:76], 10, 64)
-    keySize, _ := strconv.ParseInt(line[76:95], 10, 64)
+func extractKeyDirFileLine(line string) (string, string, int, int, int) {
+    fileId, _ := strconv.Atoi(line[0:19])
+    valueSize, _ := strconv.Atoi(line[19:38])
+    valuePos, _ := strconv.Atoi(line[38:57])
+    tstamp, _ := strconv.Atoi(line[57:76])
+    keySize, _ := strconv.Atoi(line[76:95])
     key := line[95:95+keySize]
 
-    return key, strconv.FormatInt(fileId, 10), valueSize, valuePos, tstamp
+    return key, strconv.Itoa(fileId), valueSize, valuePos, tstamp
 }
 
 // buildHintFileLine creates a line to be written in hint files.
 func buildHintFileLine(recValue record, key string) string {
     tstamp := padWithZero(recValue.tstamp)
-    keySize := padWithZero(int64(len(key)))
+    keySize := padWithZero(len(key))
     valueSize := padWithZero(recValue.valueSize)
     valuePos := padWithZero(recValue.valuePos)
     return tstamp + keySize + valueSize + valuePos + key
 }
 
 // extractHintFile extracts the data from hint files.
-func (bitcask *Bitcask) extractHintFile(hintName string) {
-    hintFileData, _ := os.ReadFile(path.Join(bitcask.datastorePath, hintName))
+func (b *Bitcask) extractHintFile(hintName string) {
+    hintFileData, _ := os.ReadFile(path.Join(b.datastorePath, hintName))
     hintFileScanner := bufio.NewScanner(strings.NewReader(string(hintFileData)))
 
     fileId := strings.Trim(hintName, hintFilePrefix)
 
     for hintFileScanner.Scan() {
         line := hintFileScanner.Text()
-        tstamp, _ := strconv.ParseInt(line[0:19], 10, 64)
-        keySize, _ := strconv.ParseInt(line[19:38], 10, 64)
-        valueSize, _ := strconv.ParseInt(line[38:57], 10, 64)
-        valuePos, _ := strconv.ParseInt(line[57:76], 10, 64)
+        tstamp, _ := strconv.Atoi(line[0:19])
+        keySize, _ := strconv.Atoi(line[19:38])
+        valueSize, _ := strconv.Atoi(line[38:57])
+        valuePos, _ := strconv.Atoi(line[57:76])
         key := line[76:76+keySize]
 
-        bitcask.keyDir[key] = record{
+        b.keyDir[key] = record{
         	fileId:    fileId,
         	valueSize: valueSize,
         	valuePos:  valuePos,
         	tstamp:    tstamp,
-        	isPending: false,
         }
     }
 }
 
 // lockCheck checks if exist another process in the bitcask datastore.
-func (bitcask *Bitcask) lockCheck() processAccess {
-    bitcaskDir, _ := os.Open(bitcask.datastorePath)
+func (b *Bitcask) lockCheck() processAccess {
+    bitcaskDir, _ := os.Open(b.datastorePath)
 
     files, _ := bitcaskDir.Readdir(0)
     
@@ -252,9 +249,9 @@ func (bitcask *Bitcask) lockCheck() processAccess {
 }
 
 // keyDirFileCheck checks if keydir file associated with another existing process exists.
-func (bitcask *Bitcask) keyDirFileCheck() string {
+func (b *Bitcask) keyDirFileCheck() string {
     var fileName string
-    bitcaskDir, _ := os.Open(bitcask.datastorePath)
+    bitcaskDir, _ := os.Open(b.datastorePath)
 
     files, _ := bitcaskDir.Readdir(0)
     
@@ -267,6 +264,6 @@ func (bitcask *Bitcask) keyDirFileCheck() string {
     return fileName
 }
 
-func padWithZero(val int64) string {
+func padWithZero(val int) string {
     return fmt.Sprintf("%019d", val)
 }
